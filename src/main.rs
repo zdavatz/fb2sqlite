@@ -211,8 +211,8 @@ fn run_migel(csv_content: &str) -> Result<(), Box<dyn Error>> {
 
     let match_count = results.iter().filter(|(_, matched)| *matched).count();
 
-    // 6. Write results to SQLite (sequential — SQLite is single-writer)
-    println!("Writing {} rows to database...", total_rows);
+    // 6. Write matched results to SQLite (sequential — SQLite is single-writer)
+    println!("Writing {} matched rows to database...", match_count);
     let (tx, rx) = mpsc::channel::<Vec<String>>();
 
     let db_fn = db_filename.clone();
@@ -250,8 +250,10 @@ fn run_migel(csv_content: &str) -> Result<(), Box<dyn Error>> {
     });
 
     tx.send(headers)?;
-    for (row, _) in results {
-        tx.send(row)?;
+    for (row, matched) in results {
+        if matched {
+            tx.send(row)?;
+        }
     }
     drop(tx);
 

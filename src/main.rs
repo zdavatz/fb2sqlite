@@ -17,25 +17,46 @@ struct Args {
     /// Download MiGeL XLSX and map migel codes/limitations to products
     #[arg(long)]
     migel: bool,
+
+    /// Use local firstbase.csv instead of downloading (useful when GS1 server is slow)
+    #[arg(long)]
+    local_csv: bool,
 }
 
 struct MigelItem {
     position_nr: String,
     bezeichnung: String,
     limitation: String,
-    search_keywords: Vec<String>,
+    /// DE first-line keywords (used for scoring)
+    keywords_de: Vec<String>,
+    /// FR first-line keywords (used for scoring)
+    keywords_fr: Vec<String>,
+    /// IT first-line keywords (used for scoring)
+    keywords_it: Vec<String>,
+    /// Union of all keywords incl. categories (used for candidate index)
+    all_keywords: Vec<String>,
 }
 
 const STOP_WORDS: &[&str] = &[
+    // German articles, prepositions, conjunctions
     "der", "die", "das", "den", "dem", "des", "ein", "eine", "eines", "einem", "einen", "einer",
     "fuer", "mit", "von", "und", "oder", "bei", "auf", "nach", "ueber", "unter", "aus", "bis",
-    "pro", "als", "inkl", "exkl", "max", "min", "per", "zur", "zum", "ins", "vom",
+    "pro", "als", "inkl", "exkl", "max", "min", "per", "zur", "zum", "ins", "vom", "ohne",
+    "auch", "sich", "noch", "wenn", "muss", "darf", "resp", "bzw",
+    // German generic terms (too common in both MiGeL and products)
     "kauf", "miete", "tag", "jahr", "monate", "stueck", "set", "alle", "nur",
     "wird", "ist", "kann", "sind", "werden", "wurde", "hat", "haben",
+    "steril", "unsteril", "sterile", "non", // too common across all medical products
+    "diverse", "divers", "diversi", // MiGeL catch-all qualifier
+    "gross", "klein", "lang", "kurz", // size/length descriptors
+    "position", "definierte", "einstellbare", // MiGeL qualifiers
+    // French
     "les", "des", "pour", "avec", "par", "une", "dans", "sur", "qui", "que",
+    "achat", "location", "piece", "sans",
+    // Italian
+    "acquisto", "noleggio", "pezzo", "senza",
+    // English
     "the", "for", "and", "with", "per",
-    "achat", "location", "piece",
-    "acquisto", "noleggio", "pezzo",
 ];
 
 /// Normalize German umlauts so ALL-CAPS text (e.g. ABSAUGGERAETE) matches
@@ -61,16 +82,19 @@ fn normalize_german(text: &str) -> String {
 }
 
 /// Extract search keywords from text: normalize, lowercase, split on non-alphanum,
-/// filter short words and stop words.
+/// filter short words and stop words, deduplicate.
 fn extract_keywords(text: &str) -> Vec<String> {
     let first_line = text.lines().next().unwrap_or(text);
     let normalized = normalize_german(first_line).to_lowercase();
-    normalized
+    let mut keywords: Vec<String> = normalized
         .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() >= 4)
+        .filter(|w| w.len() >= 3)
         .filter(|w| !STOP_WORDS.contains(w))
         .map(|w| w.to_string())
-        .collect()
+        .collect();
+    keywords.sort();
+    keywords.dedup();
+    keywords
 }
 
 /// Read a cell from a calamine row as a trimmed string.
@@ -83,7 +107,8 @@ fn cell_str(row: &[calamine::Data], idx: usize) -> String {
 }
 
 /// Parse all MiGeL items (rows with a Positions-Nr.) from the XLSX file.
-/// Uses all 3 sheets (DE, FR, IT) for keyword enrichment.
+/// Keeps per-language keywords separate for scoring, and builds a combined
+/// keyword set (incl. categories and full text) for candidate finding.
 fn parse_migel_items(path: &str) -> Result<Vec<MigelItem>, Box<dyn Error>> {
     let mut workbook: Xlsx<_> = open_workbook(path)?;
     let sheet_names: Vec<String> = workbook.sheet_names().to_vec();
@@ -106,13 +131,11 @@ fn parse_migel_items(path: &str) -> Result<Vec<MigelItem>, Box<dyn Error>> {
 
         if pos_nr.is_empty() {
             // Category header row — update hierarchy
-            // Find which level this header belongs to (deepest non-empty B..G)
             for i in (1..7).rev() {
                 let val = cell_str(row, i);
                 if !val.is_empty() {
                     category_texts[i] =
                         bezeichnung.lines().next().unwrap_or("").trim().to_string();
-                    // Clear deeper levels
                     for j in (i + 1)..7 {
                         category_texts[j] = String::new();
                     }
@@ -123,26 +146,27 @@ fn parse_migel_items(path: &str) -> Result<Vec<MigelItem>, Box<dyn Error>> {
             // Item with position number
             let first_line = bezeichnung.lines().next().unwrap_or("").trim().to_string();
 
-            // Build search text: item description + parent category descriptions
-            let mut parts: Vec<&str> = vec![&first_line];
-            for cat in &category_texts {
-                if !cat.is_empty() {
-                    parts.push(cat);
-                }
-            }
-            let search_text = parts.join(" ");
-            let keywords = extract_keywords(&search_text);
+            // DE keywords from first line only (for scoring)
+            let keywords_de = extract_keywords(&first_line);
+
+            // All keywords: DE first line only (for candidate index)
+            // NOT including category hierarchy keywords — they are too generic
+            // (e.g., "Systeme", "Geräte") and create massive false candidates.
+            let all_kw = extract_keywords(&first_line);
 
             items.push(MigelItem {
                 position_nr: pos_nr,
                 bezeichnung: first_line,
                 limitation,
-                search_keywords: keywords,
+                keywords_de,
+                keywords_fr: Vec::new(),
+                keywords_it: Vec::new(),
+                all_keywords: all_kw,
             });
         }
     }
 
-    // --- Pass 2: Enrich with French and Italian keywords ---
+    // --- Pass 2: Parse French and Italian sheets for per-language keywords ---
     let pos_map: HashMap<String, usize> = items
         .iter()
         .enumerate()
@@ -158,72 +182,190 @@ fn parse_migel_items(path: &str) -> Result<Vec<MigelItem>, Box<dyn Error>> {
             let pos_nr = cell_str(row, 7);
             if let Some(&item_idx) = pos_map.get(&pos_nr) {
                 let bezeichnung = cell_str(row, 9);
-                let extra_kw = extract_keywords(&bezeichnung);
-                items[item_idx].search_keywords.extend(extra_kw);
+                let kw = extract_keywords(&bezeichnung);
+                match sheet_idx {
+                    1 => items[item_idx].keywords_fr = kw.clone(),
+                    2 => items[item_idx].keywords_it = kw.clone(),
+                    _ => {}
+                }
+                items[item_idx].all_keywords.extend(kw);
             }
         }
     }
 
-    // Deduplicate keywords per item
+    // Deduplicate all_keywords per item
     for item in &mut items {
-        item.search_keywords.sort();
-        item.search_keywords.dedup();
+        item.all_keywords.sort();
+        item.all_keywords.dedup();
     }
 
     Ok(items)
 }
 
 /// Build an inverted index: keyword → list of MigelItem indices.
+/// Uses all_keywords (DE+FR+IT+categories) for broad candidate finding.
 fn build_keyword_index(items: &[MigelItem]) -> HashMap<String, Vec<usize>> {
     let mut index: HashMap<String, Vec<usize>> = HashMap::new();
     for (i, item) in items.iter().enumerate() {
-        for kw in &item.search_keywords {
+        for kw in &item.all_keywords {
             index.entry(kw.clone()).or_default().push(i);
         }
     }
     index
 }
 
-/// Find the best-matching MiGeL item for a product description.
-/// Uses substring matching (handles German compound words) and scores by
-/// keyword overlap ratio. Returns None if no match above threshold.
+/// Split text into words (split on non-alphanumeric characters).
+fn split_words(text: &str) -> Vec<&str> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// Check if a keyword matches in the text at word level.
+/// - `suffix`: if true, also matches as a suffix of a compound word
+///   (e.g., "katheter" in "verweilkatheter"). Only for German.
+/// - `fuzzy`: if true, also tries keyword truncated by 1 char (German plural/case).
+///   Only for German.
+/// FR/IT should use suffix=false, fuzzy=false to prevent cross-type matches
+/// (e.g., "prothese" in "endoprothese" matching eye prosthesis).
+fn word_match(text_words: &[&str], keyword: &str, suffix: bool, fuzzy: bool) -> bool {
+    for word in text_words {
+        // Exact word match
+        if *word == keyword {
+            return true;
+        }
+        // Suffix match in German compound words (keyword must be head of compound)
+        if suffix && word.len() > keyword.len() + 2 && word.ends_with(keyword) {
+            return true;
+        }
+    }
+    if fuzzy && keyword.len() >= 7 {
+        let trunc = &keyword[..keyword.len() - 1];
+        for word in text_words {
+            if *word == trunc {
+                return true;
+            }
+            if suffix && word.len() > trunc.len() + 2 && word.ends_with(trunc) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check if keyword matches anywhere in text as a substring (for candidate pre-filter).
+/// Uses fuzzy suffix matching for keywords >= 7 chars.
+fn fuzzy_contains(haystack: &str, keyword: &str) -> bool {
+    if haystack.contains(keyword) {
+        return true;
+    }
+    if keyword.len() >= 7 {
+        let trunc = &keyword[..keyword.len() - 1];
+        if haystack.contains(trunc) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Compute keyword overlap score using word-level matching.
+/// Returns (score, max_matched_keyword_len, matched_count).
+/// `suffix`: allow compound word suffix matching (German only)
+/// `fuzzy`: allow truncated keyword matching (German only)
+fn keyword_score(text_words: &[&str], keywords: &[String], suffix: bool, fuzzy: bool) -> (f64, usize, usize) {
+    let total: f64 = keywords.iter().map(|k| k.len() as f64).sum();
+    if total == 0.0 {
+        return (0.0, 0, 0);
+    }
+    let mut matched_weight = 0.0;
+    let mut max_matched_len = 0;
+    let mut matched_count = 0;
+    for kw in keywords {
+        if word_match(text_words, kw, suffix, fuzzy) {
+            matched_weight += kw.len() as f64;
+            matched_count += 1;
+            if kw.len() > max_matched_len {
+                max_matched_len = kw.len();
+            }
+        }
+    }
+    (matched_weight / total, max_matched_len, matched_count)
+}
+
+/// Find the best-matching MiGeL item for a product.
+/// CRITICAL: Each language's keywords are scored ONLY against the same language's
+/// product description. This prevents cross-language false positives (e.g.,
+/// French "pression" matching inside German "Kompressionsschraube").
 fn find_best_migel_match<'a>(
-    product_text: &str,
+    desc_de: &str,
+    desc_fr: &str,
+    desc_it: &str,
+    brand: &str,
     migel_items: &'a [MigelItem],
     keyword_index: &HashMap<String, Vec<usize>>,
 ) -> Option<&'a MigelItem> {
-    let product_lower = normalize_german(product_text).to_lowercase();
+    let de_lower = normalize_german(&format!("{} {}", desc_de, brand)).to_lowercase();
+    let fr_lower = normalize_german(&format!("{} {}", desc_fr, brand)).to_lowercase();
+    let it_lower = normalize_german(&format!("{} {}", desc_it, brand)).to_lowercase();
+    // Combined text only for candidate finding (broad pre-filter)
+    let combined = format!("{} {} {}", de_lower, fr_lower, it_lower);
 
-    // Accumulate matched keyword weight per candidate item
-    let mut candidate_scores: HashMap<usize, (f64, usize)> = HashMap::new(); // (weight, count)
+    // Pre-split text into words for word-level matching in scoring
+    let de_words = split_words(&de_lower);
+    let fr_words = split_words(&fr_lower);
+    let it_words = split_words(&it_lower);
 
+    // Step 1: Find candidate items via the broad keyword index (substring matching OK here)
+    let mut candidates: HashMap<usize, bool> = HashMap::new();
     for (keyword, indices) in keyword_index {
-        if product_lower.contains(keyword.as_str()) {
-            let weight = keyword.len() as f64;
+        if fuzzy_contains(&combined, keyword) {
             for &idx in indices {
-                let entry = candidate_scores.entry(idx).or_insert((0.0, 0));
-                entry.0 += weight;
-                entry.1 += 1;
+                candidates.insert(idx, true);
             }
         }
     }
 
-    // Normalize scores, filter by threshold, pick best
-    candidate_scores
-        .iter()
-        .filter_map(|(&idx, &(matched_weight, matched_count))| {
-            let total_weight: f64 = migel_items[idx]
-                .search_keywords
+    // Step 2: Score each candidate using WORD-LEVEL matching against per-language text
+    // This prevents "pression" from matching inside "compression",
+    // "kompression" from matching inside "kompressionsschraube", etc.
+    // DE uses fuzzy word matching (handles German plural/case: Orthese/Orthesen)
+    // FR/IT use exact word matching only
+    candidates
+        .keys()
+        .filter_map(|&idx| {
+            let item = &migel_items[idx];
+            // DE: suffix=true, fuzzy=true (German compound words + inflection)
+            // FR: suffix=false, fuzzy=false (exact word match only)
+            // IT: suffix=false, fuzzy=false (exact word match only)
+            let (score_de, max_len_de, count_de) = keyword_score(&de_words, &item.keywords_de, true, true);
+            let (score_fr, max_len_fr, count_fr) = keyword_score(&fr_words, &item.keywords_fr, false, false);
+            let (score_it, max_len_it, count_it) = keyword_score(&it_words, &item.keywords_it, false, false);
+
+            // Pick the best-scoring language
+            let (best_score, best_max_len, best_count) = [
+                (score_de, max_len_de, count_de),
+                (score_fr, max_len_fr, count_fr),
+                (score_it, max_len_it, count_it),
+            ]
                 .iter()
-                .map(|k| k.len() as f64)
-                .sum();
-            if total_weight == 0.0 {
-                return None;
-            }
-            let score = matched_weight / total_weight;
-            // Require at least 40% keyword weight overlap AND at least 1 keyword match
-            if score >= 0.4 && matched_count >= 1 {
-                Some((idx, score, matched_count))
+                .copied()
+                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+                .unwrap_or((0.0, 0, 0));
+
+            // Match criteria:
+            // - 2+ matched keywords: score >= 0.3, max keyword len >= 6
+            // - 1 matched keyword: score >= 0.5, keyword len >= 10
+            //   (filters generic 8-9 char words like "catheter", "compresse", "ecarteur"
+            //    while keeping specific compound words like "venenverweilkanuele",
+            //    "portkanuele", "tablettenmoerser")
+            let passes = if best_count >= 2 {
+                best_score >= 0.3 && best_max_len >= 6
+            } else {
+                best_score >= 0.5 && best_max_len >= 10
+            };
+
+            if passes {
+                Some((idx, best_score, best_max_len))
             } else {
                 None
             }
@@ -412,17 +554,16 @@ fn run_migel(csv_content: &str) -> Result<(), Box<dyn Error>> {
             continue;
         }
 
-        // Combine product descriptions for matching:
+        // Per-language product descriptions:
         // col 5 = TradeItemDescription_DE, 6 = FR, 7 = IT, 8 = BrandName
         let desc_de = row_data.get(5).cloned().unwrap_or_default();
         let desc_fr = row_data.get(6).cloned().unwrap_or_default();
         let desc_it = row_data.get(7).cloned().unwrap_or_default();
         let brand = row_data.get(8).cloned().unwrap_or_default();
-        let product_text = format!("{} {} {} {}", desc_de, desc_fr, desc_it, brand);
 
         let mut row_with_migel = row_data;
 
-        if let Some(migel) = find_best_migel_match(&product_text, &migel_items, &keyword_index) {
+        if let Some(migel) = find_best_migel_match(&desc_de, &desc_fr, &desc_it, &brand, &migel_items, &keyword_index) {
             row_with_migel.push(migel.position_nr.clone());
             row_with_migel.push(migel.bezeichnung.clone());
             row_with_migel.push(migel.limitation.clone());
@@ -474,14 +615,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     let url = "https://id.gs1.ch/01/07612345000961";
     let csv_filename = "firstbase.csv";
 
-    // 1. Download and save CSV
-    println!("Downloading CSV to {}...", csv_filename);
-    let response = reqwest::blocking::get(url)?;
-    let content = response.text()?;
-    {
-        let mut file = std::fs::File::create(csv_filename)?;
-        file.write_all(content.as_bytes())?;
-    }
+    let content = if args.local_csv {
+        // Use locally cached CSV file
+        println!("Reading local CSV from {}...", csv_filename);
+        fs::read_to_string(csv_filename)?
+    } else {
+        // Download and save CSV
+        println!("Downloading CSV to {}...", csv_filename);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()?;
+        let response = client.get(url).send()?;
+        let content = response.text()?;
+        {
+            let mut file = std::fs::File::create(csv_filename)?;
+            file.write_all(content.as_bytes())?;
+        }
+        content
+    };
 
     if args.migel {
         run_migel(&content)?;

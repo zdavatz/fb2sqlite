@@ -10,5 +10,6 @@ calamine = "0.26"
 chrono = "0.4.43"
 clap = { version = "4", features = ["derive"] }
 csv = "1.4.0"
+rayon = "1.10"
 reqwest = { version = "0.13.1", features = ["blocking"] }
 rusqlite = "0.38.0"

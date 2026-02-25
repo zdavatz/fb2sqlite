@@ -6,12 +6,18 @@ pub struct MigelItem {
     pub position_nr: String,
     pub bezeichnung: String,
     pub limitation: String,
-    /// DE first-line keywords (used for scoring)
+    /// DE first-line keywords (used for primary scoring)
     pub keywords_de: Vec<String>,
-    /// FR first-line keywords (used for scoring)
+    /// FR first-line keywords (used for primary scoring)
     pub keywords_fr: Vec<String>,
-    /// IT first-line keywords (used for scoring)
+    /// IT first-line keywords (used for primary scoring)
     pub keywords_it: Vec<String>,
+    /// DE bonus keywords from additional lines (>= 8 chars, counted toward match count)
+    pub secondary_de: Vec<String>,
+    /// FR bonus keywords from additional lines
+    pub secondary_fr: Vec<String>,
+    /// IT bonus keywords from additional lines
+    pub secondary_it: Vec<String>,
     /// Union of all keywords (used for candidate index)
     pub all_keywords: Vec<String>,
 }
@@ -36,6 +42,15 @@ const STOP_WORDS: &[&str] = &[
     "acquisto", "noleggio", "pezzo", "senza",
     // English
     "the", "for", "and", "with", "per",
+    // Generic medical/product terms that match too broadly at word level
+    "material", "produkt", "products", "product", "medical", "device",
+    "system", "systeme", "systems", "geraet", "geraete", "appareil",
+    // Cross-type medical terms (used for both screws/stockings/catheters/etc.)
+    "compression", "compressione", "kompression",
+    "verlaengerung", "extension", "estensione", "prolongation",
+    "silikon", "silicone",
+    // Generic surgical instrument terms (match across many unrelated instrument types)
+    "ecarteur", "divaricatore", "retraktor",
 ];
 
 /// Normalize German umlauts so ALL-CAPS text (e.g. ABSAUGGERAETE) matches
@@ -60,14 +75,35 @@ pub fn normalize_german(text: &str) -> String {
         .replace('ç', "c")
 }
 
-/// Extract search keywords from text: normalize, lowercase, split on non-alphanum,
-/// filter short words and stop words, deduplicate.
-pub fn extract_keywords(text: &str) -> Vec<String> {
+/// Extract search keywords from first line of text (min 3 chars).
+fn extract_keywords(text: &str) -> Vec<String> {
     let first_line = text.lines().next().unwrap_or(text);
-    let normalized = normalize_german(first_line).to_lowercase();
+    extract_keywords_from(first_line, 3)
+}
+
+/// Extract search keywords from ALL lines of text (min 3 chars).
+fn extract_keywords_full(text: &str) -> Vec<String> {
+    extract_keywords_from(text, 3)
+}
+
+/// Extract only long (>= 8 char) keywords from additional lines (not first line).
+/// These are specific enough to use as bonus scoring keywords.
+fn extract_secondary_keywords(text: &str) -> Vec<String> {
+    let mut lines = text.lines();
+    lines.next(); // skip first line
+    let rest: String = lines.collect::<Vec<_>>().join(" ");
+    if rest.trim().is_empty() {
+        return Vec::new();
+    }
+    extract_keywords_from(&rest, 8)
+}
+
+/// Shared keyword extraction logic.
+fn extract_keywords_from(text: &str, min_len: usize) -> Vec<String> {
+    let normalized = normalize_german(text).to_lowercase();
     let mut keywords: Vec<String> = normalized
         .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() >= 3)
+        .filter(|w| w.len() >= min_len)
         .filter(|w| !STOP_WORDS.contains(w))
         .map(|w| w.to_string())
         .collect();
@@ -125,13 +161,20 @@ pub fn parse_migel_items(path: &str) -> Result<Vec<MigelItem>, Box<dyn Error>> {
             // Item with position number
             let first_line = bezeichnung.lines().next().unwrap_or("").trim().to_string();
 
-            // DE keywords from first line only (for scoring)
+            // DE primary keywords: first line only (used for score ratio)
             let keywords_de = extract_keywords(&first_line);
+            // DE secondary keywords: long keywords from additional lines (bonus matches)
+            let secondary_de = extract_secondary_keywords(&bezeichnung);
 
-            // All keywords: DE first line only (for candidate index)
-            // NOT including category hierarchy keywords — they are too generic
-            // (e.g., "Systeme", "Geräte") and create massive false candidates.
-            let all_kw = extract_keywords(&first_line);
+            // All keywords: full Bezeichnung text (all lines) + Limitation text
+            // for broader candidate finding via the inverted index.
+            let mut all_kw = extract_keywords_full(&bezeichnung);
+            if !limitation.is_empty() {
+                let lim_kw = extract_keywords_full(&limitation);
+                all_kw.extend(lim_kw);
+                all_kw.sort();
+                all_kw.dedup();
+            }
 
             items.push(MigelItem {
                 position_nr: pos_nr,
@@ -140,6 +183,9 @@ pub fn parse_migel_items(path: &str) -> Result<Vec<MigelItem>, Box<dyn Error>> {
                 keywords_de,
                 keywords_fr: Vec::new(),
                 keywords_it: Vec::new(),
+                secondary_de,
+                secondary_fr: Vec::new(),
+                secondary_it: Vec::new(),
                 all_keywords: all_kw,
             });
         }
@@ -161,13 +207,29 @@ pub fn parse_migel_items(path: &str) -> Result<Vec<MigelItem>, Box<dyn Error>> {
             let pos_nr = cell_str(row, 7);
             if let Some(&item_idx) = pos_map.get(&pos_nr) {
                 let bezeichnung = cell_str(row, 9);
+                let limitation = cell_str(row, 10);
+                // Primary scoring keywords: first line only
                 let kw = extract_keywords(&bezeichnung);
+                // Secondary keywords: long keywords from additional lines
+                let secondary = extract_secondary_keywords(&bezeichnung);
                 match sheet_idx {
-                    1 => items[item_idx].keywords_fr = kw.clone(),
-                    2 => items[item_idx].keywords_it = kw.clone(),
+                    1 => {
+                        items[item_idx].keywords_fr = kw.clone();
+                        items[item_idx].secondary_fr = secondary;
+                    }
+                    2 => {
+                        items[item_idx].keywords_it = kw.clone();
+                        items[item_idx].secondary_it = secondary;
+                    }
                     _ => {}
                 }
-                items[item_idx].all_keywords.extend(kw);
+                // Candidate index: full text + limitation
+                let full_kw = extract_keywords_full(&bezeichnung);
+                items[item_idx].all_keywords.extend(full_kw);
+                if !limitation.is_empty() {
+                    let lim_kw = extract_keywords_full(&limitation);
+                    items[item_idx].all_keywords.extend(lim_kw);
+                }
             }
         }
     }
@@ -307,22 +369,48 @@ pub fn find_best_migel_match<'a>(
     // Step 2: Score each candidate using WORD-LEVEL matching against per-language text
     // DE uses fuzzy word matching (handles German plural/case: Orthese/Orthesen)
     // FR/IT use exact word matching only
+    // Secondary keywords from additional lines count as bonus matches
     candidates
         .keys()
         .filter_map(|&idx| {
             let item = &migel_items[idx];
-            // DE: suffix=true, fuzzy=true (German compound words + inflection)
-            // FR: suffix=false, fuzzy=false (exact word match only)
-            // IT: suffix=false, fuzzy=false (exact word match only)
+            // Primary scores (first-line keywords)
             let (score_de, max_len_de, count_de) = keyword_score(&de_words, &item.keywords_de, true, true);
             let (score_fr, max_len_fr, count_fr) = keyword_score(&fr_words, &item.keywords_fr, false, false);
             let (score_it, max_len_it, count_it) = keyword_score(&it_words, &item.keywords_it, false, false);
 
-            // Pick the best-scoring language
+            // Secondary bonus matches: only count if at least 1 primary keyword matched
+            // This prevents secondary-only matches (e.g., "Verlängerung" from MiGeL line 2
+            // matching unrelated products that happen to have "Verlängerung")
+            let (_, sec_max_de, sec_count_de) = if count_de > 0 {
+                keyword_score(&de_words, &item.secondary_de, true, true)
+            } else {
+                (0.0, 0, 0)
+            };
+            let (_, sec_max_fr, sec_count_fr) = if count_fr > 0 {
+                keyword_score(&fr_words, &item.secondary_fr, false, false)
+            } else {
+                (0.0, 0, 0)
+            };
+            let (_, sec_max_it, sec_count_it) = if count_it > 0 {
+                keyword_score(&it_words, &item.secondary_it, false, false)
+            } else {
+                (0.0, 0, 0)
+            };
+
+            // Total count = primary + secondary bonus
+            let total_de = count_de + sec_count_de;
+            let total_fr = count_fr + sec_count_fr;
+            let total_it = count_it + sec_count_it;
+            let max_de = max_len_de.max(sec_max_de);
+            let max_fr = max_len_fr.max(sec_max_fr);
+            let max_it = max_len_it.max(sec_max_it);
+
+            // Pick the best-scoring language (by primary score, using total count for threshold)
             let (best_score, best_max_len, best_count) = [
-                (score_de, max_len_de, count_de),
-                (score_fr, max_len_fr, count_fr),
-                (score_it, max_len_it, count_it),
+                (score_de, max_de, total_de),
+                (score_fr, max_fr, total_fr),
+                (score_it, max_it, total_it),
             ]
                 .iter()
                 .copied()
@@ -330,11 +418,8 @@ pub fn find_best_migel_match<'a>(
                 .unwrap_or((0.0, 0, 0));
 
             // Match criteria:
-            // - 2+ matched keywords: score >= 0.3, max keyword len >= 6
+            // - 2+ matched keywords (primary+secondary): score >= 0.3, max keyword len >= 6
             // - 1 matched keyword: score >= 0.5, keyword len >= 10
-            //   (filters generic 8-9 char words like "catheter", "compresse", "ecarteur"
-            //    while keeping specific compound words like "venenverweilkanuele",
-            //    "portkanuele", "tablettenmoerser")
             let passes = if best_count >= 2 {
                 best_score >= 0.3 && best_max_len >= 6
             } else {

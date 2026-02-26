@@ -5,9 +5,11 @@ A Rust CLI tool that downloads product data from the [GS1 Switzerland](https://i
 ## Usage
 
 ```bash
-cargo run                          # download CSV, create firstbase.db, SCP upload
-cargo run -- --migel               # also download MiGeL XLSX and map codes to products
-cargo run -- --migel --local-csv   # use cached firstbase.csv instead of downloading
+cargo run                                  # download CSV, create firstbase.db, SCP upload
+cargo run -- --migel                       # download CSV + MiGeL XLSX, save firstbase_migel_dd.mm.yyyy.db locally
+cargo run -- --migel --deploy              # same as --migel but saves as firstbase_migel.db and SCPs to remote
+cargo run -- --migel --local-csv           # use cached firstbase.csv instead of downloading
+cargo run -- --migel --deploy --local-csv  # deploy with cached CSV
 ```
 
 ### Default mode
@@ -23,8 +25,12 @@ cargo run -- --migel --local-csv   # use cached firstbase.csv instead of downloa
 2. Downloads MiGeL XLSX from BAG (3 language sheets: DE, FR, IT)
 3. Parses MiGeL items and builds a keyword index from Bezeichnung + Limitation text
 4. Matches each product against MiGeL items using multi-language keyword scoring (DE, FR, IT product descriptions + BrandName)
-5. **Only matched products** are written to `firstbase_migel_dd.mm.yyyy.db` (date-stamped) with added `migel_code`, `migel_bezeichnung`, `migel_limitation` columns
-6. SCPs the database to the remote server
+5. **Only matched products** are written to SQLite with added `migel_code`, `migel_bezeichnung`, `migel_limitation` columns
+6. Without `--deploy`: saves as `firstbase_migel_dd.mm.yyyy.db` (date-stamped) locally. With `--deploy`: saves as `firstbase_migel.db` and SCPs to remote server
+
+### --deploy
+
+When used with `--migel`, names the output file `firstbase_migel.db` (without date stamp) and uploads it to the remote server via SCP. Without `--deploy`, the file is saved locally with a date-stamped name and no upload occurs.
 
 Matching uses parallel processing via [rayon](https://crates.io/crates/rayon) across all CPU cores.
 

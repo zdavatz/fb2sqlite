@@ -12,7 +12,8 @@ fb2sqlite is a Rust CLI tool that downloads a CSV from GS1 (Swiss product barcod
 cargo build           # debug build
 cargo build --release # release build
 cargo run             # build and run (downloads CSV, creates firstbase.db, SCPs to remote)
-cargo run -- --migel  # download CSV + MiGeL XLSX, map migel codes/limitations, output only matched products
+cargo run -- --migel  # download CSV + MiGeL XLSX, map migel codes/limitations, save as firstbase_migel_dd.mm.yyyy.db locally
+cargo run -- --migel --deploy  # same as --migel but saves as firstbase_migel.db and SCPs to remote server
 cargo run -- --migel --local-csv  # use cached firstbase.csv instead of downloading from GS1
 ```
 
@@ -38,7 +39,8 @@ Two-file application with a producer/consumer pipeline:
 2. Parses items with position numbers, extracts keywords from full Bezeichnung text + Limitation text
 3. Builds inverted keyword index for candidate finding
 4. Matches each CSV product in parallel (rayon) using TradeItemDescription DE/FR/IT + BrandName
-5. **Only matched products** are written to `firstbase_migel_dd.mm.yyyy.db` with added `migel_code`, `migel_bezeichnung`, `migel_limitation` columns
+5. **Only matched products** are written to SQLite with added `migel_code`, `migel_bezeichnung`, `migel_limitation` columns
+6. Without `--deploy`: saves as `firstbase_migel_dd.mm.yyyy.db` locally (no SCP). With `--deploy`: saves as `firstbase_migel.db` and SCPs to remote
 
 ### Matching details (src/migel.rs)
 

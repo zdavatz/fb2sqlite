@@ -24,6 +24,10 @@ struct Args {
     /// Use local firstbase.csv instead of downloading (useful when GS1 server is slow)
     #[arg(long)]
     local_csv: bool,
+
+    /// Deploy: SCP the database to the remote server (uses plain filename without date)
+    #[arg(long)]
+    deploy: bool,
 }
 
 fn run_normal(csv_content: &str) -> Result<(), Box<dyn Error>> {
@@ -135,7 +139,7 @@ fn match_product_row(
     }
 }
 
-fn run_migel(csv_content: &str) -> Result<(), Box<dyn Error>> {
+fn run_migel(csv_content: &str, deploy: bool) -> Result<(), Box<dyn Error>> {
     let migel_url = "https://www.bag.admin.ch/dam/de/sd-web/77j5rwUTzbkq/Mittel-%20und%20Gegenst%C3%A4ndeliste%20per%2001.01.2026%20in%20Excel-Format.xlsx";
     let migel_file = "migel.xlsx";
 
@@ -170,9 +174,13 @@ fn run_migel(csv_content: &str) -> Result<(), Box<dyn Error>> {
         keyword_index.len()
     );
 
-    // 3. Generate date-stamped output filename
-    let now = Local::now();
-    let db_filename = now.format("firstbase_migel_%d.%m.%Y.db").to_string();
+    // 3. Generate output filename
+    let db_filename = if deploy {
+        "firstbase_migel.db".to_string()
+    } else {
+        let now = Local::now();
+        now.format("firstbase_migel_%d.%m.%Y.db").to_string()
+    };
 
     // 4. Parse CSV — collect all rows first for parallel processing
     println!("Reading CSV rows...");
@@ -268,19 +276,21 @@ fn run_migel(csv_content: &str) -> Result<(), Box<dyn Error>> {
         total_rows, match_count
     );
 
-    // 7. SCP Transfer
-    let remote_dest = "zdavatz@65.109.137.20:/var/www/pillbox.oddb.org/";
-    println!("Transferring {} to {}...", db_filename, remote_dest);
+    // 7. SCP Transfer (only when deploying)
+    if deploy {
+        let remote_dest = "zdavatz@65.109.137.20:/var/www/pillbox.oddb.org/";
+        println!("Transferring {} to {}...", db_filename, remote_dest);
 
-    let status = Command::new("scp")
-        .arg(&db_filename)
-        .arg(remote_dest)
-        .status()?;
+        let status = Command::new("scp")
+            .arg(&db_filename)
+            .arg(remote_dest)
+            .status()?;
 
-    if status.success() {
-        println!("SCP transfer complete.");
-    } else {
-        return Err(format!("SCP failed with exit code: {:?}", status.code()).into());
+        if status.success() {
+            println!("SCP transfer complete.");
+        } else {
+            return Err(format!("SCP failed with exit code: {:?}", status.code()).into());
+        }
     }
 
     Ok(())
@@ -312,7 +322,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     if args.migel {
-        run_migel(&content)?;
+        run_migel(&content, args.deploy)?;
     } else {
         run_normal(&content)?;
     }

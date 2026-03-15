@@ -60,6 +60,7 @@ Two-file application with a producer/consumer pipeline:
 - **Negative keywords**: per MiGeL code prefix exclusions (orthesis body-part, dressing types, catheter-vs-handle, surgical instruments)
 - **Unicode NFC normalization** + uppercase accent handling for FR/IT text
 - Thresholds: 2+ keywords: score >= 0.3, max len >= 6; single keyword: score >= 0.5, len >= 8 (>= 0.7 for verbose)
+- Note: ~480 of 786 MiGeL codes have no matches (capital equipment, services, or very specific subcategories not in GS1)
 
 ## Key Dependencies
 

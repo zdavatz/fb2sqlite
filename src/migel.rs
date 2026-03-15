@@ -71,7 +71,8 @@ const STOP_WORDS: &[&str] = &[
     // Generic functional terms (match across surgical/orthopedic devices)
     "sostegno", "soutien", "support", "stuetze",
     // Generic material/property terms (match across bandages, gauze, tape, etc.)
-    "elastique", "elastico", "elastisch", "elastic",
+    "elastique", "elastico", "elastic",  // FR/IT/EN "elastic" — too generic cross-language
+    // NOTE: "elastisch" (DE) intentionally NOT stop-worded — needed for "Tape elastisch" matching
     "stumpf", "mousse",  // "blunt" — matches across cannulas, retractors, screws
     // Generic body part / anatomy terms (too broad when used alone)
     "smussa", "smusso",  // IT "blunt" — matches across cannulas, screws, retractors

@@ -76,6 +76,8 @@ cargo build --release
 
 **Thresholds:** 2+ keywords: score >= 0.3, max len >= 6; single keyword: score >= 0.5, len >= 8 (>= 0.7 for verbose descriptions)
 
+**Unmatched MiGeL codes:** ~480 of 786 MiGeL codes find no products. Most are capital equipment (pumps, lamps, ventilators) not in GS1 barcode registries, maintenance/rental services, or very specific subcategories where products match sibling codes instead.
+
 ## Dependencies
 
 - [reqwest](https://crates.io/crates/reqwest) — HTTP client (blocking)

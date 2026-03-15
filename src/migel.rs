@@ -704,7 +704,7 @@ fn word_match(text_words: &[&str], keyword: &str, suffix: bool, fuzzy: bool) -> 
             }
         }
     }
-    if fuzzy && keyword.len() >= 7 {
+    if fuzzy && keyword.len() >= 6 {
         let trunc = &keyword[..keyword.len() - 1];
         for word in text_words {
             if *word == trunc {

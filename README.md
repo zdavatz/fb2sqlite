@@ -55,7 +55,7 @@ cargo build --release
 **Candidate finding** — Aho-Corasick automaton scans the combined DE+FR+IT product text in a single pass to find all matching keywords (including fuzzy truncated variants), then maps matched keywords to candidate MiGeL items.
 
 **Per-language scoring** — Each candidate is scored per language (DE keywords against DE product text, FR against FR, IT against IT):
-- German: compound word suffix matching + fuzzy inflection (e.g., "katheter" in "verweilkatheter") + compound prefix decomposition via whitelist (e.g., "blasen" from "blasenkatheter")
+- German: compound word suffix matching + fuzzy inflection >= 6 chars (e.g., "binde" matches "binden", "katheter" in "verweilkatheter") + compound prefix decomposition via whitelist (e.g., "blasen" from "blasenkatheter")
 - French/Italian: exact word matching only (prevents cross-type false positives)
 - English-only detection: if all language fields are identical, FR/IT scoring is skipped
 

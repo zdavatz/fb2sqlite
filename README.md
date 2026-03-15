@@ -58,6 +58,7 @@ cargo build --release
 - German: compound word suffix matching + fuzzy inflection >= 6 chars (e.g., "binde" matches "binden", "katheter" in "verweilkatheter") + compound prefix decomposition via whitelist (e.g., "blasen" from "blasenkatheter")
 - French/Italian: exact word matching only (prevents cross-type false positives)
 - English-only detection: if all language fields are identical, FR/IT scoring is skipped
+- English-to-German enrichment: ~60 common English medical terms (e.g., "knee" → "knie knieorthese", "catheter" → "katheter") are translated and appended to the DE text before matching, enabling products with English-only descriptions to match German MiGeL keywords
 
 **IDF weighting** — Keywords are weighted by inverse document frequency (how rare they are across MiGeL items, capped at 5.0). Specific keywords like "verweilkatheter" get higher weight than generic ones like "katheter". IDF is used for ranking among passing candidates (choosing the best MiGeL match), while length-based scoring is used for threshold decisions.
 
@@ -68,9 +69,9 @@ cargo build --release
 - Phrase matching: if the MiGeL Bezeichnung (>= 8 chars) appears as a substring in the product text, a strong ranking boost (1.0) is applied
 
 **Precision filters:**
-- Company exclusions: surgical implant manufacturers (DePuy Synthes/JJHCS, Waldemar Link, Mathys) and lab diagnostics (Roche Diagnostics) are excluded from matching — their products produce near-100% false positive rates
+- Company exclusions: surgical implant manufacturers (DePuy Synthes/JJHCS, Waldemar Link, Mathys) and lab diagnostics (Roche Diagnostics) are excluded — near-100% false positive rates
+- Universal exclusions block surgical gloves, interventional/surgical devices (PTA catheters, stent systems, ERCP, ablation catheters, etc.) from all MiGeL matching
 - Stop words filter generic cross-category terms (dimensions, anatomical terms, generic device types)
-- Universal exclusions block interventional/surgical devices (PTA catheters, stent systems, ERCP, ablation catheters, etc.) from all MiGeL matching
 - Negative keywords per MiGeL code prefix prevent specific false positive patterns (orthesis body-part confusion, dressing type confusion, catheter-vs-handle, surgical instruments vs patient devices)
 - Secondary keywords (long terms from additional Bezeichnung lines) provide bonus matches gated by at least one primary keyword match
 - Length penalty: verbose DE descriptions (15+ significant words) require higher single-keyword score (>= 0.7)

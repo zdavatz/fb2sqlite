@@ -47,6 +47,7 @@ Two-file application with a producer/consumer pipeline:
 - **Aho-Corasick candidate finding**: single-pass scan of combined DE+FR+IT text finds all matching keywords (including fuzzy truncated variants)
 - **Per-language scoring**: DE keywords scored against DE product text only, FR against FR, IT against IT
 - **English-only detection**: if DE/FR/IT fields are identical, FR/IT scoring is skipped to prevent cross-language false positives
+- **English-to-German enrichment**: ~60 common English medical terms translated and appended to DE text (e.g., "knee" → "knie knieorthese"); context-aware combinations (e.g., "ortho" + "rehab" → "spezialschuhe")
 - **IDF-weighted ranking**: keywords weighted by inverse document frequency (capped at 5.0) for choosing the best match among passing candidates
 - **Category hierarchy keywords**: parent category text from XLSX hierarchy (>= 8 chars) boosts IDF ranking (0.5 weight) but does NOT count toward match thresholds
 - German: compound word suffix matching + fuzzy inflection >= 6 chars (e.g., "binde" matches "binden", "katheter" in "verweilkatheter") + compound prefix decomposition via whitelist (e.g., "blasen" from "blasenkatheter")

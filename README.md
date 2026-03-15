@@ -68,6 +68,7 @@ cargo build --release
 - Phrase matching: if the MiGeL Bezeichnung (>= 8 chars) appears as a substring in the product text, a strong ranking boost (1.0) is applied
 
 **Precision filters:**
+- Company exclusions: surgical implant manufacturers (DePuy Synthes/JJHCS, Waldemar Link, Mathys) and lab diagnostics (Roche Diagnostics) are excluded from matching — their products produce near-100% false positive rates
 - Stop words filter generic cross-category terms (dimensions, anatomical terms, generic device types)
 - Universal exclusions block interventional/surgical devices (PTA catheters, stent systems, ERCP, ablation catheters, etc.) from all MiGeL matching
 - Negative keywords per MiGeL code prefix prevent specific false positive patterns (orthesis body-part confusion, dressing type confusion, catheter-vs-handle, surgical instruments vs patient devices)

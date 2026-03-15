@@ -55,6 +55,7 @@ Two-file application with a producer/consumer pipeline:
 - **Bidirectional coverage**: rewards matches where keywords cover a large fraction of product text (short names rank higher than verbose descriptions)
 - **Phrase matching**: exact MiGeL Bezeichnung (>= 8 chars) substring match in product text gets 1.0 ranking boost
 - **Length penalty**: verbose DE descriptions (15+ significant words) require single-keyword score >= 0.7
+- **Company exclusions**: surgical implant (JJHCS/DePuy Synthes, Waldemar Link, Mathys) and lab diagnostics (Roche) companies excluded — near-100% false positive rate
 - **Stop words**: filter generic cross-category terms (dimensions, anatomical terms, generic device types, FR/IT generic terms)
 - **Universal exclusions**: block interventional/surgical devices (PTA, stent, ERCP, ablation, ureteral, etc.) from all MiGeL matching
 - **Negative keywords**: per MiGeL code prefix exclusions (orthesis body-part, dressing types, catheter-vs-handle, surgical instruments)

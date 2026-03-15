@@ -108,6 +108,16 @@ fn run_normal(csv_content: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Companies whose products are surgical implants, lab diagnostics, or other
+/// non-MiGeL categories. These are excluded from matching entirely because
+/// keyword overlap with MiGeL items produces almost 100% false positives.
+const EXCLUDED_COMPANIES: &[&str] = &[
+    "JJHCS Inc",                          // DePuy Synthes surgical implants
+    "Waldemar Link",                       // Hip/knee implants
+    "Roche Diagnostics (Schweiz) AG",      // Lab diagnostic kits
+    "Mathys AG Bettlach",                  // Orthopedic implants
+];
+
 /// Match a single product row against the MiGeL index.
 /// Returns (row_with_migel_columns, matched).
 fn match_product_row(
@@ -115,13 +125,22 @@ fn match_product_row(
     migel_items: &[MigelItem],
     search_index: &MigelSearchIndex,
 ) -> (Vec<String>, bool) {
-    // col 5 = TradeItemDescription_DE, 6 = FR, 7 = IT, 8 = BrandName
+    // col 3 = InformationProviderPartyName, 5 = DE, 6 = FR, 7 = IT, 8 = BrandName
+    let company = row_data.get(3).cloned().unwrap_or_default();
     let desc_de = row_data.get(5).cloned().unwrap_or_default();
     let desc_fr = row_data.get(6).cloned().unwrap_or_default();
     let desc_it = row_data.get(7).cloned().unwrap_or_default();
     let brand = row_data.get(8).cloned().unwrap_or_default();
 
     let mut row_with_migel = row_data;
+
+    // Skip matching for companies that produce surgical implants / lab diagnostics
+    if EXCLUDED_COMPANIES.contains(&company.as_str()) {
+        row_with_migel.push(String::new());
+        row_with_migel.push(String::new());
+        row_with_migel.push(String::new());
+        return (row_with_migel, false);
+    }
 
     if let Some(migel) =
         find_best_migel_match(&desc_de, &desc_fr, &desc_it, &brand, migel_items, search_index)

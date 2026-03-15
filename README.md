@@ -22,11 +22,12 @@ cargo run -- --migel --deploy --local-csv  # deploy with cached CSV
 ### --migel mode
 
 1. Downloads (or reads local) CSV from GS1
-2. Downloads MiGeL XLSX from BAG (3 language sheets: DE, FR, IT)
-3. Parses MiGeL items and builds a keyword index from Bezeichnung + Limitation text
-4. Matches each product against MiGeL items using multi-language keyword scoring (DE, FR, IT product descriptions + BrandName)
-5. **Only matched products** are written to SQLite with added `migel_code`, `migel_bezeichnung`, `migel_limitation` columns
-6. Without `--deploy`: saves as `firstbase_migel_dd.mm.yyyy.db` (date-stamped) locally. With `--deploy`: saves as `firstbase_migel.db` and SCPs to remote server
+2. Downloads MiGeL XLSX from BAG (skips download if `migel.xlsx` already exists locally)
+3. Parses MiGeL items (786 items with position numbers across 3 language sheets: DE, FR, IT)
+4. Builds an Aho-Corasick automaton from all keywords for fast candidate finding
+5. Matches each product against MiGeL items in parallel using IDF-weighted multi-language keyword scoring
+6. **Only matched products** are written to SQLite with added `migel_code`, `migel_bezeichnung`, `migel_limitation` columns
+7. Without `--deploy`: saves as `firstbase_migel_dd.mm.yyyy.db` (date-stamped) locally. With `--deploy`: saves as `firstbase_migel.db` and SCPs to remote server
 
 ### --deploy
 
@@ -47,16 +48,26 @@ cargo build --release
 ## Architecture
 
 - `src/main.rs` — CLI args, CSV parsing, parallel matching dispatch, SQLite writing, SCP upload
-- `src/migel.rs` — MiGeL XLSX parsing, keyword extraction, word-level matching engine
+- `src/migel.rs` — MiGeL XLSX parsing, keyword extraction, Aho-Corasick candidate finding, IDF-weighted word-level matching engine
 
 ### MiGeL matching algorithm
 
-- Keywords are extracted from MiGeL Bezeichnung (all lines) and Limitation text in DE/FR/IT
-- Product descriptions are scored per-language against the same language's MiGeL keywords (prevents cross-language false positives)
+**Candidate finding** — Aho-Corasick automaton scans the combined DE+FR+IT product text in a single pass to find all matching keywords (including fuzzy truncated variants), then maps matched keywords to candidate MiGeL items.
+
+**Per-language scoring** — Each candidate is scored per language (DE keywords against DE product text, FR against FR, IT against IT):
 - German: compound word suffix matching + fuzzy inflection (e.g., "katheter" in "verweilkatheter")
-- French/Italian: exact word matching only
+- French/Italian: exact word matching only (prevents cross-type false positives)
+- English-only detection: if all language fields are identical, FR/IT scoring is skipped
+
+**IDF weighting** — Keywords are weighted by inverse document frequency (how rare they are across MiGeL items). Specific keywords like "verweilkatheter" get higher weight than generic ones like "katheter". IDF is used for ranking among passing candidates (choosing the best MiGeL match), while length-based scoring is used for threshold decisions.
+
+**Precision filters:**
+- Stop words filter generic cross-category terms (dimensions, anatomical terms, generic device types)
+- Universal exclusions block interventional/surgical devices (PTA catheters, stent systems, ERCP, ablation catheters, etc.) from all MiGeL matching
+- Negative keywords per MiGeL code prefix prevent specific false positive patterns (orthesis body-part confusion, dressing type confusion, catheter-vs-handle, surgical instruments vs patient devices)
 - Secondary keywords (long terms from additional Bezeichnung lines) provide bonus matches gated by at least one primary keyword match
-- Stop words filter generic cross-type terms (e.g., "compression", "ecarteur", "system")
+
+**Thresholds:** 2+ keywords: score >= 0.3, max len >= 6; single keyword: score >= 0.5, len >= 8
 
 ## Dependencies
 
@@ -67,3 +78,5 @@ cargo build --release
 - [rayon](https://crates.io/crates/rayon) — Parallel processing
 - [clap](https://crates.io/crates/clap) — CLI argument parsing
 - [chrono](https://crates.io/crates/chrono) — Date/time formatting
+- [aho-corasick](https://crates.io/crates/aho-corasick) — Multi-pattern string matching
+- [unicode-normalization](https://crates.io/crates/unicode-normalization) — Unicode NFC normalization

@@ -3,10 +3,9 @@ mod migel;
 use chrono::Local;
 use clap::Parser;
 use csv::ReaderBuilder;
-use migel::{build_keyword_index, find_best_migel_match, parse_migel_items, MigelItem};
+use migel::{build_search_index, find_best_migel_match, parse_migel_items, MigelItem, MigelSearchIndex};
 use rayon::prelude::*;
 use rusqlite::Connection;
-use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::io::{Cursor, Write};
@@ -114,7 +113,7 @@ fn run_normal(csv_content: &str) -> Result<(), Box<dyn Error>> {
 fn match_product_row(
     row_data: Vec<String>,
     migel_items: &[MigelItem],
-    keyword_index: &HashMap<String, Vec<usize>>,
+    search_index: &MigelSearchIndex,
 ) -> (Vec<String>, bool) {
     // col 5 = TradeItemDescription_DE, 6 = FR, 7 = IT, 8 = BrandName
     let desc_de = row_data.get(5).cloned().unwrap_or_default();
@@ -125,7 +124,7 @@ fn match_product_row(
     let mut row_with_migel = row_data;
 
     if let Some(migel) =
-        find_best_migel_match(&desc_de, &desc_fr, &desc_it, &brand, migel_items, keyword_index)
+        find_best_migel_match(&desc_de, &desc_fr, &desc_it, &brand, migel_items, search_index)
     {
         row_with_migel.push(migel.position_nr.clone());
         row_with_migel.push(migel.bezeichnung.clone());
@@ -143,22 +142,26 @@ fn run_migel(csv_content: &str, deploy: bool) -> Result<(), Box<dyn Error>> {
     let migel_url = "https://www.bag.admin.ch/dam/de/sd-web/77j5rwUTzbkq/Mittel-%20und%20Gegenst%C3%A4ndeliste%20per%2001.01.2026%20in%20Excel-Format.xlsx";
     let migel_file = "migel.xlsx";
 
-    // 1. Download MiGeL XLSX
-    println!("Downloading MiGeL XLSX...");
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("fb2sqlite/0.1")
-        .build()?;
-    let response = client.get(migel_url).send()?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Failed to download MiGeL XLSX: HTTP {}",
-            response.status()
-        )
-        .into());
+    // 1. Download MiGeL XLSX (skip if already exists locally)
+    if std::path::Path::new(migel_file).exists() {
+        println!("Using existing local MiGeL XLSX: {}", migel_file);
+    } else {
+        println!("Downloading MiGeL XLSX...");
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("fb2sqlite/0.1")
+            .build()?;
+        let response = client.get(migel_url).send()?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "Failed to download MiGeL XLSX: HTTP {}",
+                response.status()
+            )
+            .into());
+        }
+        let bytes = response.bytes()?;
+        fs::write(migel_file, &bytes)?;
+        println!("MiGeL XLSX saved ({} bytes)", bytes.len());
     }
-    let bytes = response.bytes()?;
-    fs::write(migel_file, &bytes)?;
-    println!("MiGeL XLSX saved ({} bytes)", bytes.len());
 
     // 2. Parse MiGeL items
     println!("Parsing MiGeL items...");
@@ -168,11 +171,8 @@ fn run_migel(csv_content: &str, deploy: bool) -> Result<(), Box<dyn Error>> {
         migel_items.len()
     );
 
-    let keyword_index = build_keyword_index(&migel_items);
-    println!(
-        "Built keyword index with {} unique keywords",
-        keyword_index.len()
-    );
+    let search_index = build_search_index(&migel_items);
+    println!("Built Aho-Corasick search index");
 
     // 3. Generate output filename
     let db_filename = if deploy {
@@ -214,7 +214,7 @@ fn run_migel(csv_content: &str, deploy: bool) -> Result<(), Box<dyn Error>> {
     // 5. Match products to MiGeL items IN PARALLEL using rayon
     let results: Vec<(Vec<String>, bool)> = data_rows
         .into_par_iter()
-        .map(|row| match_product_row(row, &migel_items, &keyword_index))
+        .map(|row| match_product_row(row, &migel_items, &search_index))
         .collect();
 
     let match_count = results.iter().filter(|(_, matched)| *matched).count();

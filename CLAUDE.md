@@ -24,7 +24,7 @@ No tests are configured.
 Two-file application with a producer/consumer pipeline:
 
 - `src/main.rs` — CLI (`clap`), CSV download/parsing, parallel matching dispatch (`rayon`), SQLite writing (`mpsc` channel + thread), SCP upload
-- `src/migel.rs` — MiGeL XLSX parsing (`calamine`), keyword extraction (multi-line + limitation text), word-level matching engine with per-language scoring
+- `src/migel.rs` — MiGeL XLSX parsing (`calamine`), keyword extraction, Aho-Corasick candidate finding, IDF-weighted word-level matching engine with per-language scoring
 
 ### Default mode
 
@@ -35,21 +35,27 @@ Two-file application with a producer/consumer pipeline:
 
 ### --migel mode
 
-1. Downloads MiGeL XLSX from BAG (3 language sheets: DE, FR, IT)
+1. Downloads MiGeL XLSX from BAG (skips if `migel.xlsx` already exists locally)
 2. Parses items with position numbers, extracts keywords from full Bezeichnung text + Limitation text
-3. Builds inverted keyword index for candidate finding
+3. Builds Aho-Corasick automaton + IDF weights for candidate finding and ranking
 4. Matches each CSV product in parallel (rayon) using TradeItemDescription DE/FR/IT + BrandName
 5. **Only matched products** are written to SQLite with added `migel_code`, `migel_bezeichnung`, `migel_limitation` columns
 6. Without `--deploy`: saves as `firstbase_migel_dd.mm.yyyy.db` locally (no SCP). With `--deploy`: saves as `firstbase_migel.db` and SCPs to remote
 
 ### Matching details (src/migel.rs)
 
-- Per-language scoring: DE keywords scored against DE product text only, FR against FR, IT against IT
+- **Aho-Corasick candidate finding**: single-pass scan of combined DE+FR+IT text finds all matching keywords (including fuzzy truncated variants)
+- **Per-language scoring**: DE keywords scored against DE product text only, FR against FR, IT against IT
+- **English-only detection**: if DE/FR/IT fields are identical, FR/IT scoring is skipped to prevent cross-language false positives
+- **IDF-weighted ranking**: keywords weighted by inverse document frequency for choosing the best match among passing candidates
 - German: compound word suffix matching + fuzzy inflection (e.g., "katheter" in "verweilkatheter")
 - French/Italian: exact word matching only (prevents cross-type false positives)
 - Secondary keywords (>= 8 chars from additional Bezeichnung lines): bonus matches gated by at least one primary keyword match
-- Stop words filter generic cross-type terms (compression, ecarteur, system, etc.)
-- Thresholds: 2+ keywords: score >= 0.3, max len >= 6; single keyword: score >= 0.5, len >= 10
+- **Stop words**: filter generic cross-category terms (dimensions, anatomical terms, generic device types, FR/IT generic terms)
+- **Universal exclusions**: block interventional/surgical devices (PTA, stent, ERCP, ablation, ureteral, etc.) from all MiGeL matching
+- **Negative keywords**: per MiGeL code prefix exclusions (orthesis body-part, dressing types, catheter-vs-handle, surgical instruments)
+- **Unicode NFC normalization** + uppercase accent handling for FR/IT text
+- Thresholds: 2+ keywords: score >= 0.3, max len >= 6; single keyword: score >= 0.5, len >= 8
 
 ## Key Dependencies
 
@@ -60,3 +66,5 @@ Two-file application with a producer/consumer pipeline:
 - `rayon` — parallel matching across CPU cores
 - `clap` — CLI argument parsing
 - `chrono` — date/time formatting for output filename
+- `aho-corasick` — multi-pattern string matching for fast candidate finding
+- `unicode-normalization` — Unicode NFC normalization for accent handling

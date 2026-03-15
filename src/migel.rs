@@ -82,6 +82,107 @@ const STOP_WORDS: &[&str] = &[
     "siringa",   // IT "syringe" — matches all syringe types
 ];
 
+/// English-to-German medical term dictionary for matching products with English-only
+/// descriptions against German MiGeL keywords. When an English term is found in the
+/// product text, its German equivalents are appended to improve matching.
+const EN_DE_MEDICAL_TERMS: &[(&str, &[&str])] = &[
+    // Body parts / anatomical regions
+    ("cervical", &["cervikalstuetze", "halskrause", "halswirbelsaeule"]),
+    ("lumbar", &["lumbal", "lendenwirbelsaeule", "lumbalstuetze"]),
+    ("thoracic", &["thorakal", "brustwirbelsaeule"]),
+    ("spinal", &["wirbelsaeule", "spinal"]),
+    ("knee", &["knie", "knieorthese", "kniebandage"]),
+    ("ankle", &["sprunggelenk", "sprunggelenksorthese"]),
+    ("wrist", &["handgelenk", "handgelenkorthese"]),
+    ("shoulder", &["schulter", "schulterorthese"]),
+    ("elbow", &["ellenbogen", "ellenbogenorthese"]),
+    ("finger", &["finger", "fingerorthese"]),
+    ("hip", &["huefte", "hueftorthese"]),
+    // Orthopedic devices
+    ("orthosis", &["orthese", "orthesen"]),
+    ("orthoses", &["orthese", "orthesen"]),
+    ("orthotic", &["orthese", "orthopaedische"]),
+    ("orthotics", &["orthese", "orthopaedische"]),
+    ("ortho", &["orthopaedische", "orthese"]),
+    ("brace", &["orthese", "stuetze", "bandage"]),
+    ("splint", &["schiene"]),
+    ("support", &["bandage", "stuetze"]),
+    ("prosthesis", &["prothese"]),
+    ("prosthetic", &["prothese"]),
+    ("insole", &["schuheinlage", "einlage"]),
+    ("shoe", &["schuh", "spezialschuhe"]),
+    ("shoes", &["schuhe", "spezialschuhe"]),
+    ("footwear", &["schuhe", "spezialschuhe"]),
+    ("rehab", &["rehabilitation"]),
+    // Catheters / cannulas
+    ("catheter", &["katheter"]),
+    ("cannula", &["kanuele"]),
+    ("needle", &["nadel", "kanuele"]),
+    ("syringe", &["spritze"]),
+    // Wound care
+    ("bandage", &["bandage", "binde", "verband"]),
+    ("dressing", &["verband", "wundverband"]),
+    ("compress", &["kompresse"]),
+    ("gauze", &["gaze", "gazekompresse"]),
+    ("plaster", &["pflaster"]),
+    ("tape", &["tape"]),
+    // Respiratory
+    ("ventilator", &["beatmungsgeraet"]),
+    ("nebulizer", &["vernebler"]),
+    ("inhaler", &["inhalator"]),
+    ("oxygen", &["sauerstoff"]),
+    ("mask", &["maske"]),
+    // Compression / stockings
+    ("stocking", &["strumpf", "kompressionsstrumpf"]),
+    ("compression", &["kompression", "kompressionsbandage"]),
+    // Infusion / injection
+    ("infusion", &["infusion", "infusionsset"]),
+    ("injection", &["injektion"]),
+    ("pump", &["pumpe"]),
+    // General
+    ("glove", &["handschuh"]),
+    ("wheelchair", &["rollstuhl"]),
+    ("walker", &["gehwagen", "rollator"]),
+    ("crutch", &["kruecke", "gehstuetze"]),
+    ("crutches", &["kruecken", "gehstuetzen"]),
+    ("stabilisation", &["stabilisation"]),
+    ("stabilization", &["stabilisation"]),
+];
+
+/// Enrich text with German translations of English medical terms.
+/// Appends German equivalents when English terms are found, improving
+/// matching against German MiGeL keywords.
+pub fn enrich_with_german(text: &str) -> String {
+    let lower = text.to_lowercase();
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    let clean_words: Vec<String> = words
+        .iter()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+        .collect();
+    let mut additions: Vec<&str> = Vec::new();
+
+    for &(en_term, de_terms) in EN_DE_MEDICAL_TERMS {
+        if clean_words.iter().any(|w| w == en_term) {
+            for de in de_terms {
+                additions.push(de);
+            }
+        }
+    }
+
+    // Context-aware mappings: certain word combinations map to specific terms
+    let has = |term: &str| clean_words.iter().any(|w| w == term);
+    // "ortho" + "rehab" together → orthopedic rehabilitation shoes
+    if has("ortho") && has("rehab") {
+        additions.push("spezialschuhe");
+    }
+
+    if additions.is_empty() {
+        text.to_string()
+    } else {
+        format!("{} {}", text, additions.join(" "))
+    }
+}
+
 /// Product-level negative keywords: if a product's combined text contains any of
 /// these terms, it should NOT match MiGeL items in certain code ranges.
 /// Format: (MiGeL code prefix, exclusion keyword).
@@ -356,6 +457,12 @@ const NEGATIVE_KEYWORDS: &[(&str, &str)] = &[
     // --- Ständer/Infusionsständer should NOT match feeding tubes ---
     ("03.07.08", "ernaehrungssonde"),
     ("03.07.08", "nasoenteral"),
+    // --- Spezialschuhe (26.01) should NOT match beds or dental products ---
+    ("26.01", "bett"),
+    ("26.01", "rahmen"),
+    ("26.01", "pflegebett"),
+    // --- Hand-Orthesen (23.21) should NOT match dental products ---
+    ("23.21", "gum"),   // dental brand GUM ≠ hand orthosis
 ];
 
 /// Normalize German umlauts so ALL-CAPS text (e.g. ABSAUGGERAETE) matches
@@ -807,6 +914,9 @@ const UNIVERSAL_EXCLUSIONS: &[&[&str]] = &[
     &["navistar"],
     // Infusion warmers (not infusion sets)
     &["infusion", "warmer"],
+    // Surgical gloves (not MiGeL patient devices)
+    &["surgical", "gloves"],
+    &["surgical", "glove"],
 ];
 
 /// Check if a product is universally excluded from all MiGeL matching.
@@ -841,7 +951,9 @@ pub fn find_best_migel_match<'a>(
     migel_items: &'a [MigelItem],
     search_index: &MigelSearchIndex,
 ) -> Option<&'a MigelItem> {
-    let de_lower = normalize_german(&format!("{} {}", desc_de, brand)).to_lowercase();
+    // Enrich with German translations of English medical terms before normalizing
+    let de_enriched = enrich_with_german(&format!("{} {}", desc_de, brand));
+    let de_lower = normalize_german(&de_enriched).to_lowercase();
     let fr_lower = normalize_german(&format!("{} {}", desc_fr, brand)).to_lowercase();
     let it_lower = normalize_german(&format!("{} {}", desc_it, brand)).to_lowercase();
 

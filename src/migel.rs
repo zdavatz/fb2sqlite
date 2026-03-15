@@ -20,6 +20,8 @@ pub struct MigelItem {
     pub secondary_fr: Vec<String>,
     /// IT bonus keywords from additional lines
     pub secondary_it: Vec<String>,
+    /// DE category hierarchy keywords (from parent categories in XLSX)
+    pub category_de: Vec<String>,
     /// Union of all keywords (used for candidate index)
     pub all_keywords: Vec<String>,
 }
@@ -302,10 +304,13 @@ const NEGATIVE_KEYWORDS: &[(&str, &str)] = &[
     ("15.13.01.00", "rippenhalterung"),
     ("15.13.01.00", "verschluss-halbring"),
     ("15.13.01.00", "fixationsplatte"),
-    // --- Handgriff für Katheter should NOT match surgical electrode handles ---
+    // --- Handgriff für Katheter should NOT match surgical electrode handles or catheters ---
     ("15.13.06", "elektrode"),
     ("15.13.06", "electrode"),
     ("15.13.06", "kippschalter"),
+    ("15.13.06", "tiemann"),
+    ("15.13.06", "careflow"),
+    ("15.13.06", "bicakcilar"),
     // --- Dreiweghahn (03.07.02.01) should NOT match industrial taps ---
     ("03.07.02.01", "kanister"),
     // --- Schlauchverbände should NOT match wound change sets ---
@@ -328,6 +333,28 @@ const NEGATIVE_KEYWORDS: &[(&str, &str)] = &[
     ("35.01.09", "retraktor"),
     ("35.01.09", "ecarteur"),
     ("35.01.09", "divaricatore"),
+    // --- Bladder catheters should NOT match drills or other surgical tools ---
+    ("15.10", "bohrer"),
+    ("15.10", "foret"),
+    ("15.10", "fresa"),
+    // --- Spüllösung should NOT match X-ray templates or test components ---
+    ("99.11", "roentgenschablone"),
+    ("99.11", "testschaft"),
+    // --- Einweg Pinzette should NOT match plastic sheets ---
+    ("99.31.05", "unterlage"),
+    ("99.31.05", "plastikunterlage"),
+    // --- Brillen/Kontaktlinsen should NOT match nasal cannulas ---
+    ("25.01", "nasenbrille"),
+    ("25.01", "sauerstoff"),
+    // --- Schlauchverbände should NOT match wound contact layers, wound gels, or adhesive dressings ---
+    ("35.01.08", "wundkontaktschicht"),
+    ("35.01.08", "wunddistanzgitter"),
+    ("35.01.08", "wundgel"),
+    ("35.01.08", "wundverband"),
+    ("35.01.08", "cosmopor"),
+    // --- Ständer/Infusionsständer should NOT match feeding tubes ---
+    ("03.07.08", "ernaehrungssonde"),
+    ("03.07.08", "nasoenteral"),
 ];
 
 /// Normalize German umlauts so ALL-CAPS text (e.g. ABSAUGGERAETE) matches
@@ -446,15 +473,26 @@ pub fn parse_migel_items(path: &str) -> Result<Vec<MigelItem>, Box<dyn Error>> {
             // DE secondary keywords: long keywords from additional lines (bonus matches)
             let secondary_de = extract_secondary_keywords(&bezeichnung);
 
-            // All keywords: full Bezeichnung text (all lines) + Limitation text
+            // Category hierarchy keywords (from parent categories, >= 8 chars)
+            // e.g., "Injektions- und Infusionsmaterialien" → ["injektions", "infusionsmaterialien"]
+            // Only long, specific terms to avoid generic matches
+            let cat_text = category_texts.iter()
+                .filter(|t| !t.is_empty())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let category_de = extract_keywords_from(&cat_text, 8);
+
+            // All keywords: full Bezeichnung text (all lines) + Limitation text + category
             // for broader candidate finding via the inverted index.
             let mut all_kw = extract_keywords_full(&bezeichnung);
             if !limitation.is_empty() {
                 let lim_kw = extract_keywords_full(&limitation);
                 all_kw.extend(lim_kw);
-                all_kw.sort();
-                all_kw.dedup();
             }
+            all_kw.extend(category_de.clone());
+            all_kw.sort();
+            all_kw.dedup();
 
             items.push(MigelItem {
                 position_nr: pos_nr,
@@ -466,6 +504,7 @@ pub fn parse_migel_items(path: &str) -> Result<Vec<MigelItem>, Box<dyn Error>> {
                 secondary_de,
                 secondary_fr: Vec::new(),
                 secondary_it: Vec::new(),
+                category_de,
                 all_keywords: all_kw,
             });
         }
@@ -794,7 +833,7 @@ pub fn find_best_migel_match<'a>(
     // DE uses fuzzy word matching (handles German plural/case: Orthese/Orthesen)
     // FR/IT use exact word matching only
     // Secondary keywords from additional lines count as bonus matches
-    candidates
+    let mut passing: Vec<(usize, f64, usize, f64)> = candidates
         .iter()
         .filter_map(|&idx| {
             let item = &migel_items[idx];
@@ -802,7 +841,7 @@ pub fn find_best_migel_match<'a>(
             // Skip FR/IT scoring if the product has identical text in all fields
             // Check negative keywords before scoring
             if is_excluded_by_negative_keywords(&combined, &item.position_nr) {
-                return None;
+                return None; // filtered out; tracked via passing count vs candidate count
             }
 
             let idf = &search_index.idf_weights;
@@ -835,11 +874,20 @@ pub fn find_best_migel_match<'a>(
                 (0.0, 0, 0, 0.0)
             };
 
-            // Total count = primary + secondary bonus
+            // Category hierarchy bonus (DE only): boosts IDF ranking but does NOT
+            // count toward the match count threshold (to prevent generic category
+            // terms from pushing weak matches over the threshold)
+            let (_, cat_max_de, _, cat_idf_de) = if count_de > 0 {
+                keyword_score(&de_words, &item.category_de, true, true, idf)
+            } else {
+                (0.0, 0, 0, 0.0)
+            };
+
+            // Total count = primary + secondary (category NOT included in count)
             let total_de = count_de + sec_count_de;
             let total_fr = count_fr + sec_count_fr;
             let total_it = count_it + sec_count_it;
-            let max_de = max_len_de.max(sec_max_de);
+            let max_de = max_len_de.max(sec_max_de).max(cat_max_de);
             let max_fr = max_len_fr.max(sec_max_fr);
             let max_it = max_len_it.max(sec_max_it);
 
@@ -855,7 +903,9 @@ pub fn find_best_migel_match<'a>(
                 .unwrap_or((0.0, 0, 0));
 
             // Best IDF score across languages (for ranking among passing candidates)
-            let best_idf = idf_de.max(idf_fr).max(idf_it);
+            // Category IDF bonus rewards matches where product text aligns with
+            // the MiGeL item's parent category (e.g., "Injektions-" for needle items)
+            let best_idf = idf_de.max(idf_fr).max(idf_it) + cat_idf_de * 0.5;
 
             // Match criteria (length-based score for stable thresholds):
             // - 2+ matched keywords: score >= 0.3, max keyword len >= 6
@@ -868,15 +918,20 @@ pub fn find_best_migel_match<'a>(
 
             if passes {
                 // Use IDF score for ranking (prefers matches on rare, specific keywords)
-                Some((idx, best_idf, best_max_len))
+                Some((idx, best_idf, best_max_len, best_score))
             } else {
                 None
             }
         })
-        .max_by(|a, b| {
-            a.1.partial_cmp(&b.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.2.cmp(&b.2))
-        })
-        .map(|(idx, _, _)| &migel_items[idx])
+        .collect::<Vec<_>>();
+
+    // Sort by IDF score descending, then max_len descending
+    passing.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.2.cmp(&a.2))
+    });
+
+    // Return the best-ranked candidate
+    passing.first().map(|&(idx, _, _, _)| &migel_items[idx])
 }

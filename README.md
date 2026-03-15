@@ -59,7 +59,9 @@ cargo build --release
 - French/Italian: exact word matching only (prevents cross-type false positives)
 - English-only detection: if all language fields are identical, FR/IT scoring is skipped
 
-**IDF weighting** — Keywords are weighted by inverse document frequency (how rare they are across MiGeL items). Specific keywords like "verweilkatheter" get higher weight than generic ones like "katheter". IDF is used for ranking among passing candidates (choosing the best MiGeL match), while length-based scoring is used for threshold decisions.
+**IDF weighting** — Keywords are weighted by inverse document frequency (how rare they are across MiGeL items, capped at 5.0). Specific keywords like "verweilkatheter" get higher weight than generic ones like "katheter". IDF is used for ranking among passing candidates (choosing the best MiGeL match), while length-based scoring is used for threshold decisions.
+
+**Category hierarchy** — Parent category text from the MiGeL XLSX hierarchy (e.g., "Injektions- und Infusionsmaterialien" → "Kanülen") is extracted as category keywords (>= 8 chars). These boost the IDF ranking score (with 0.5 weight) to prefer MiGeL items whose category context matches the product, but do NOT count toward match count thresholds.
 
 **Precision filters:**
 - Stop words filter generic cross-category terms (dimensions, anatomical terms, generic device types)

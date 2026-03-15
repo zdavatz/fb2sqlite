@@ -55,7 +55,7 @@ cargo build --release
 **Candidate finding** — Aho-Corasick automaton scans the combined DE+FR+IT product text in a single pass to find all matching keywords (including fuzzy truncated variants), then maps matched keywords to candidate MiGeL items.
 
 **Per-language scoring** — Each candidate is scored per language (DE keywords against DE product text, FR against FR, IT against IT):
-- German: compound word suffix matching + fuzzy inflection (e.g., "katheter" in "verweilkatheter")
+- German: compound word suffix matching + fuzzy inflection (e.g., "katheter" in "verweilkatheter") + compound prefix decomposition via whitelist (e.g., "blasen" from "blasenkatheter")
 - French/Italian: exact word matching only (prevents cross-type false positives)
 - English-only detection: if all language fields are identical, FR/IT scoring is skipped
 
@@ -63,13 +63,18 @@ cargo build --release
 
 **Category hierarchy** — Parent category text from the MiGeL XLSX hierarchy (e.g., "Injektions- und Infusionsmaterialien" → "Kanülen") is extracted as category keywords (>= 8 chars). These boost the IDF ranking score (with 0.5 weight) to prefer MiGeL items whose category context matches the product, but do NOT count toward match count thresholds.
 
+**Ranking signals:**
+- Bidirectional coverage: rewards matches where keywords cover a large fraction of the product's significant words (short focused names rank higher than verbose descriptions with incidental keyword overlap)
+- Phrase matching: if the MiGeL Bezeichnung (>= 8 chars) appears as a substring in the product text, a strong ranking boost (1.0) is applied
+
 **Precision filters:**
 - Stop words filter generic cross-category terms (dimensions, anatomical terms, generic device types)
 - Universal exclusions block interventional/surgical devices (PTA catheters, stent systems, ERCP, ablation catheters, etc.) from all MiGeL matching
 - Negative keywords per MiGeL code prefix prevent specific false positive patterns (orthesis body-part confusion, dressing type confusion, catheter-vs-handle, surgical instruments vs patient devices)
 - Secondary keywords (long terms from additional Bezeichnung lines) provide bonus matches gated by at least one primary keyword match
+- Length penalty: verbose DE descriptions (15+ significant words) require higher single-keyword score (>= 0.7)
 
-**Thresholds:** 2+ keywords: score >= 0.3, max len >= 6; single keyword: score >= 0.5, len >= 8
+**Thresholds:** 2+ keywords: score >= 0.3, max len >= 6; single keyword: score >= 0.5, len >= 8 (>= 0.7 for verbose descriptions)
 
 ## Dependencies
 

@@ -642,6 +642,35 @@ fn split_words(text: &str) -> Vec<&str> {
         .collect()
 }
 
+/// Common German compound word components that can be extracted as prefixes.
+/// Maps prefix → minimum remaining length (to prevent false splits).
+const COMPOUND_PREFIXES: &[(&str, usize)] = &[
+    ("blasen", 6),       // Blasenkatheter → blasen + katheter
+    ("frauen", 6),       // Frauenkatheter → frauen + katheter
+    ("verweil", 6),      // Verweilkatheter → verweil + katheter
+    ("einmal", 6),       // Einmalblasenkatheter → einmal + blasenkatheter
+    ("sicherheits", 5),  // Sicherheitskanüle → sicherheits + kanüle
+    ("absaug", 6),       // Absaugkatheter → absaug + katheter
+    ("infusions", 5),    // Infusionsschlauch → infusions + schlauch
+    ("kompressions", 5), // Kompressionsbinde → kompressions + binde
+    ("verbindungs", 5),  // Verbindungsschlauch → verbindungs + schlauch
+    ("wund", 5),         // Wundverband → wund + verband
+    ("augen", 6),        // Augenkompresse → augen + kompresse
+    ("saug", 6),         // Saugkompresse → saug + kompresse
+    ("ballon", 6),       // Ballonkatheter → ballon + katheter
+];
+
+/// Try to decompose a German compound word into known prefix + remainder.
+/// Returns the prefix if found and the remainder is long enough.
+fn decompose_compound(word: &str) -> Option<(&str, &str)> {
+    for &(prefix, min_rest) in COMPOUND_PREFIXES {
+        if word.len() > prefix.len() + min_rest && word.starts_with(prefix) {
+            return Some((prefix, &word[prefix.len()..]));
+        }
+    }
+    None
+}
+
 /// Check if a keyword matches in the text at word level.
 /// - `suffix`: if true, also matches as a suffix of a compound word
 ///   (e.g., "katheter" in "verweilkatheter"). Only for German.
@@ -658,6 +687,20 @@ fn word_match(text_words: &[&str], keyword: &str, suffix: bool, fuzzy: bool) -> 
         // Suffix match in German compound words (keyword must be tail of compound)
         if suffix && word.len() > keyword.len() + 2 && word.ends_with(keyword) {
             return true;
+        }
+        // Compound prefix decomposition: check if word decomposes into
+        // a known prefix + keyword remainder (e.g., "blasenkatheter" → "blasen" + "katheter")
+        // The PREFIX must match the keyword, and the REMAINDER must also be a known
+        // compound component (prevents false decomposition of arbitrary words)
+        if suffix {
+            if let Some((prefix, remainder)) = decompose_compound(word) {
+                if prefix == keyword {
+                    // Verify remainder is also a meaningful medical term (>= 6 chars)
+                    if remainder.len() >= 6 {
+                        return true;
+                    }
+                }
+            }
         }
     }
     if fuzzy && keyword.len() >= 7 {
@@ -907,11 +950,41 @@ pub fn find_best_migel_match<'a>(
             // the MiGeL item's parent category (e.g., "Injektions-" for needle items)
             let best_idf = idf_de.max(idf_fr).max(idf_it) + cat_idf_de * 0.5;
 
+            // Bidirectional bonus: reward matches where the matched keyword(s)
+            // cover a large fraction of the product's significant words.
+            // A product named "Katheterventil" matching MiGeL "Katheterventil" gets
+            // high coverage (1.0), while a 30-word surgical instrument description
+            // matching one keyword gets low coverage (~0.03).
+            let significant_words = de_words.iter()
+                .filter(|w| w.len() >= 4)
+                .count()
+                .max(1) as f64;
+            let coverage = best_count as f64 / significant_words;
+            let best_idf = best_idf + coverage * 0.3;
+
+            // Phrase matching bonus: if the MiGeL Bezeichnung (first line) appears
+            // as a substring in the product text, it's a very strong signal.
+            let bez_lower = normalize_german(&item.bezeichnung).to_lowercase();
+            let phrase_bonus = if bez_lower.len() >= 8 && de_lower.contains(&bez_lower) {
+                1.0 // strong boost for exact phrase match
+            } else {
+                0.0
+            };
+            let best_idf = best_idf + phrase_bonus;
+
+            // DE significant word count (for length penalty on verbose descriptions)
+            let de_sig_words = de_words.iter().filter(|w| w.len() >= 4).count();
+
             // Match criteria (length-based score for stable thresholds):
             // - 2+ matched keywords: score >= 0.3, max keyword len >= 6
             // - 1 matched keyword: score >= 0.5, keyword len >= 8
+            // - Very long DE descriptions (15+ significant words) with single keyword:
+            //   require higher score (>= 0.7) to reduce random keyword overlap in
+            //   verbose surgical instrument descriptions
             let passes = if best_count >= 2 {
                 best_score >= 0.3 && best_max_len >= 6
+            } else if de_sig_words >= 15 {
+                best_score >= 0.7 && best_max_len >= 8
             } else {
                 best_score >= 0.5 && best_max_len >= 8
             };
